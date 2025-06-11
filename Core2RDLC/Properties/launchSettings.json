@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Core2RDLC": {
+      "commandName": "Project",
+      "commandLineArgs": "C:\\Users\\Cason\\Documents\\Project\\WdfSolution\\AccountingTool\\Withdraw\\Withdraw.rdlc C:\\Users\\Cason\\Documents\\Project\\WdfSolution\\AccLib\\bin\\Debug\\net6.0\\AccLib.dll AccWithdrawRptVw,AccEntryVw"
+    }
+  }
+}
