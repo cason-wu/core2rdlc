@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Spectre.Console.Cli" Version="0.57.2" />
     <ProjectReference Include="..\RdlcEditorLib\RdlcEditorLib.csproj" />
   </ItemGroup>
 

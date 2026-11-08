@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core2RDLC", "Core2RDLC\Core
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RdlcEditorLib", "RdlcEditorLib\RdlcEditorLib.csproj", "{C17740A7-D32E-44AB-906B-8C7D314AB205}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core2RDLC.Tests", "Core2RDLC.Tests\Core2RDLC.Tests.csproj", "{59C385C1-FB8E-4492-B871-2EAAC1E712B7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{C17740A7-D32E-44AB-906B-8C7D314AB205}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C17740A7-D32E-44AB-906B-8C7D314AB205}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C17740A7-D32E-44AB-906B-8C7D314AB205}.Release|Any CPU.Build.0 = Release|Any CPU
+		{59C385C1-FB8E-4492-B871-2EAAC1E712B7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{59C385C1-FB8E-4492-B871-2EAAC1E712B7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{59C385C1-FB8E-4492-B871-2EAAC1E712B7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{59C385C1-FB8E-4492-B871-2EAAC1E712B7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
