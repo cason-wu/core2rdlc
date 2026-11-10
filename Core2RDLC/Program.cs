@@ -1,72 +1,45 @@
-using RdlcEditorLib;
+using Spectre.Console.Cli;
 
 namespace Core2RDLC;
 
-internal class Program
+internal static class Program
 {
-    static void Main(string[] args)
+    public static int Main(string[] args)
     {
-        if (args.Length < 3 || args.Length > 4)
-        {
-            ShowUsage();
-            return;
-        }
-
         try
         {
-            string rdlcPath = args[0];
-            string assemblyPath = args[1];
-            string[] typeList = args[2].Split(',');
-
-            var editor = new RdlcEditor(rdlcPath);
-            editor.AddDataSets(assemblyPath, typeList);
-            
-            var txt = editor.GetString();
-            Console.WriteLine(txt);
-            
-            var preview = HasArg(args, "--preview");
-            
-            if (preview == false)
-                editor.Save();
-            
-            Console.WriteLine("完成！");
+            var app = new CommandApp();
+            app.Configure(config =>
+            {
+                config.SetApplicationName("core2rdlc");
+                config.PropagateExceptions();
+                config.UseStrictParsing();
+                config.AddCommand<EditCommand>("edit")
+                    .WithDescription("Select classes, preview changes and update an RDLC report.");
+                config.AddCommand<TypesCommand>("types")
+                    .WithDescription("List available classes and optionally their fields.");
+            });
+            return app.Run(NormalizeLegacyArguments(args));
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"錯誤: {ex.Message}");
+            Console.Error.WriteLine($"錯誤: {ex.Message}");
+            return 1;
         }
     }
 
-    static void ShowUsage()
+    private static string[] NormalizeLegacyArguments(string[] args)
     {
-        Console.WriteLine("Usage: Core2RDLC <rdlcPath> <assemblyPath> <typeList> [--preview]");
-        Console.WriteLine();
-        Console.WriteLine("Parameters:");
-        Console.WriteLine("  rdlcPath      Path to the RDLC file");
-        Console.WriteLine("  assemblyPath  Path to the assembly file");
-        Console.WriteLine("  typeList      Comma-separated list of type names");
-        Console.WriteLine();
-        Console.WriteLine("Options:");
-        Console.WriteLine("  --preview    Preview changes without saving to the RDLC file");
-        Console.WriteLine();
-        Console.WriteLine("Example:");
-        Console.WriteLine("  Core2RDLC Report.rdlc MyAssembly.dll \"Customer,Order,Product\"");
-    }
-
-    static string GetArgValue(string[] args, string argName, string defaultValue)
-    {
-        for (int i = 0; i < args.Length - 1; i++)
-        {
-            if (args[i].Equals(argName, StringComparison.OrdinalIgnoreCase))
-            {
-                return args[i + 1];
-            }
-        }
-        return defaultValue;
-    }
-
-    static bool HasArg(string[] args, string argName)
-    {
-        return Array.Exists(args, arg => arg.Equals(argName, StringComparison.OrdinalIgnoreCase));
+        if (args.Length is < 3 or > 4 || args[0] is "edit" or "types" || args[0].StartsWith('-'))
+            return args;
+        Console.Error.WriteLine("舊版格式仍可使用；建議改用 edit <rdlcPath> --assembly <DLL> --type <TYPE> --yes。");
+        var result = new List<string> { "edit", args[0], "--assembly", args[1] };
+        foreach (var type in args[2].Split(','))
+            result.AddRange(["--type", type]);
+        if (args.Length == 4)
+            result.Add(args[3].Equals("--preview", StringComparison.OrdinalIgnoreCase) ? "--preview" : args[3]);
+        else
+            result.Add("--yes"); // Preserve the original positional command's save behavior.
+        return result.ToArray();
     }
 }

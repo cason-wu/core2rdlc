@@ -23,11 +23,12 @@ public class RdlcEditor
         _nsManager = new XmlNamespaceManager(_rdlDoc.NameTable);
 
         // 獲取默認命名空間
-        var defaultNamespace = _rdlDoc.DocumentElement.NamespaceURI;
+        var root = _rdlDoc.DocumentElement ?? throw new InvalidDataException("The RDLC file has no root element.");
+        var defaultNamespace = root.NamespaceURI;
         _nsManager.AddNamespace("ns", defaultNamespace);
 
         // 獲取 rd 命名空間
-        foreach (XmlAttribute attr in _rdlDoc.DocumentElement.Attributes)
+        foreach (XmlAttribute attr in root.Attributes)
         {
             if (attr.Prefix == "xmlns" && attr.LocalName == "rd")
             {
@@ -38,81 +39,106 @@ public class RdlcEditor
         }
     }
 
-    public void AddDataSets(string assemblyPath, string[] typeList)
+    public IReadOnlyList<string> GetDataSetNames() => Array.AsReadOnly(
+        (_rdlDoc.DocumentElement!.SelectNodes("ns:DataSets/ns:DataSet", _nsManager)!
+            .Cast<XmlNode>().Select(n => n.Attributes!["Name"]!.Value)).ToArray());
+
+    /// <summary>Validates and describes an update without modifying the report or file.</summary>
+    public IReadOnlyList<DataSetChange> PreviewDataSets(string assemblyPath, string[] typeList)
     {
-        var assembly = Assembly.LoadFrom(assemblyPath);
+        var update = PrepareUpdate(assemblyPath, typeList);
+        return Array.AsReadOnly(update.NewSets.Select(node =>
+        {
+            var name = node.GetAttribute("Name");
+            var old = update.ExistingSets.SingleOrDefault(n => n.Attributes?["Name"]?.Value == name);
+            var fields = ReadFields(node);
+            var previous = old == null ? [] : ReadFields(old);
+            var currentByName = fields.ToDictionary(f => f.Name, StringComparer.Ordinal);
+            var oldByName = previous.ToDictionary(f => f.Name, StringComparer.Ordinal);
+            return new DataSetChange(name, old == null, Array.AsReadOnly(fields),
+                Array.AsReadOnly(fields.Where(f => !oldByName.ContainsKey(f.Name)).ToArray()),
+                Array.AsReadOnly(previous.Where(f => !currentByName.ContainsKey(f.Name)).ToArray()),
+                Array.AsReadOnly(fields.Where(f => oldByName.TryGetValue(f.Name, out var value) && value.TypeName != f.TypeName)
+                    .Select(f => new FieldTypeChange(f.Name, oldByName[f.Name].TypeName, f.TypeName)).ToArray()));
+        }).ToArray());
+    }
 
-        cleanOldNodes(assembly.GetName().Name);
+    private ReportField[] ReadFields(XmlNode dataSet) => dataSet.SelectNodes("ns:Fields/ns:Field", _nsManager)!
+        .Cast<XmlNode>().Select(node => new ReportField(node.Attributes!["Name"]!.Value,
+            node.ChildNodes.Cast<XmlNode>().FirstOrDefault(n => n.LocalName == "TypeName")?.InnerText ?? "(unspecified)"))
+        .ToArray();
 
-        // 使用命名空間管理器
-        var dataSourcesNode = _rdlDoc.DocumentElement.SelectSingleNode("ns:DataSources", _nsManager);
-        var dataSourceNode = genDataSourceNode(assembly);
-        dataSourcesNode.AppendChild(dataSourceNode);
+    private sealed record PreparedUpdate(string AssemblyName, XmlElement NewSource,
+        XmlElement[] NewSets, XmlNode[] ExistingSets);
 
-        // 建立與此 Assembly 關聯的 DataSet
-        var types = assembly.GetTypes().Where(t => typeList.Contains(t.Name));
+    private PreparedUpdate PrepareUpdate(string assemblyPath, string[] typeList)
+    {
+        var catalog = AssemblyTypeCatalog.Load(assemblyPath);
+        var assembly = catalog.Assembly;
+        var types = catalog.Resolve(typeList);
+
+        var assemblyName = assembly.GetName().Name!;
+        var dataSetsNode = _rdlDoc.DocumentElement!.SelectSingleNode("ns:DataSets", _nsManager);
+        var existingSets = dataSetsNode?.SelectNodes("ns:DataSet", _nsManager)?.Cast<XmlNode>().ToArray()
+                           ?? Array.Empty<XmlNode>();
         foreach (var type in types)
         {
-            var dataSetNode = genDataSetNode(type);
-
-            var dataSetsNode = _rdlDoc.DocumentElement.SelectSingleNode("ns:DataSets", _nsManager);
-            dataSetsNode.AppendChild(dataSetNode);
+            var conflicts = existingSets.Where(node => node.Attributes?["Name"]?.Value == type.Name);
+            if (conflicts.Any(node => node.SelectSingleNode("ns:Query/ns:DataSourceName", _nsManager)?.InnerText != assemblyName))
+                throw new ArgumentException($"DataSet '{type.Name}' already belongs to another data source.");
         }
+
+        // Generate everything before modifying the report, so failures leave it unchanged.
+        var newSource = genDataSourceNode(assembly);
+        var newSets = types.Select(genDataSetNode).ToArray();
+        return new PreparedUpdate(assemblyName, newSource, newSets, existingSets);
+    }
+
+    public void AddDataSets(string assemblyPath, string[] typeList)
+    {
+        var update = PrepareUpdate(assemblyPath, typeList);
+        var dataSourcesNode = GetOrCreateContainer("DataSources");
+        var dataSetsNode = GetOrCreateContainer("DataSets");
+        foreach (var node in dataSourcesNode.SelectNodes("ns:DataSource", _nsManager)!.Cast<XmlNode>().ToArray())
+            if (node.Attributes?["Name"]?.Value == update.AssemblyName)
+                dataSourcesNode.RemoveChild(node);
+        dataSourcesNode.AppendChild(update.NewSource);
+
+        var selectedNames = update.NewSets.Select(t => t.GetAttribute("Name")).ToHashSet(StringComparer.Ordinal);
+        foreach (var node in update.ExistingSets)
+            if (selectedNames.Contains(node.Attributes?["Name"]?.Value ?? ""))
+                dataSetsNode.RemoveChild(node);
+        foreach (var node in update.NewSets)
+            dataSetsNode.AppendChild(node);
+    }
+
+    private XmlNode GetOrCreateContainer(string name)
+    {
+        var root = _rdlDoc.DocumentElement!;
+        var node = root.SelectSingleNode($"ns:{name}", _nsManager);
+        if (node != null)
+            return node;
+        return root.AppendChild(_rdlDoc.CreateElement(name, root.NamespaceURI))!;
     }
 
     private XmlElement CreateElementWithAttribute(string elementName, string attributeName, string attributeValue)
     {
-        var element = _rdlDoc.CreateElement(elementName, _rdlDoc.DocumentElement.NamespaceURI);
-        var attr = _rdlDoc.CreateAttribute(attributeName);
-        attr.Value = attributeValue;
-        element.Attributes.Append(attr);
+        var element = _rdlDoc.CreateElement(elementName, _rdlDoc.DocumentElement!.NamespaceURI);
+        element.SetAttribute(attributeName, attributeValue);
         return element;
-    }
-
-    private void cleanOldNodes(string assemblyName)
-    {
-        // 使用命名空間管理器
-        var dataSourcesNode = _rdlDoc.DocumentElement.SelectSingleNode("ns:DataSources", _nsManager);
-        if (dataSourcesNode is null)
-        {
-            dataSourcesNode = _rdlDoc.CreateElement("DataSources", _rdlDoc.DocumentElement.NamespaceURI);
-            _rdlDoc.DocumentElement.AppendChild(dataSourcesNode);
-        }
-        else
-        {
-            var existingSource = dataSourcesNode.SelectSingleNode($"ns:DataSource[@Name='{assemblyName}']", _nsManager);
-
-            if (existingSource != null)
-                dataSourcesNode.RemoveChild(existingSource);
-        }
-
-        // 再移除與此 Assembly 關聯的 DataSet (根據 Query.DataSourceName = AssemblyName)
-        var dataSetsNode = _rdlDoc.DocumentElement.SelectSingleNode("ns:DataSets", _nsManager);
-        if (dataSetsNode is null)
-        {
-            dataSetsNode = _rdlDoc.CreateElement("DataSets", _rdlDoc.DocumentElement.NamespaceURI);
-            _rdlDoc.DocumentElement.AppendChild(dataSetsNode);
-        }
-        else
-        {
-            var dataSetNodes = dataSetsNode.SelectNodes($"ns:DataSet[ns:Query/ns:DataSourceName='{assemblyName}']", _nsManager);
-
-            foreach (XmlNode node in dataSetNodes!)
-                dataSetsNode.RemoveChild(node);
-        }
     }
 
     private XmlElement genDataSourceNode(Assembly assembly)
     {
         // 使用新方法建立 DataSource
-        var dataSourceNode = CreateElementWithAttribute("DataSource", "Name", assembly.GetName().Name);
+        var dataSourceNode = CreateElementWithAttribute("DataSource", "Name", assembly.GetName().Name!);
 
-        var connectionProps = _rdlDoc.CreateElement("ConnectionProperties", _rdlDoc.DocumentElement.NamespaceURI);
-        var dataProvider = _rdlDoc.CreateElement("DataProvider", _rdlDoc.DocumentElement.NamespaceURI);
+        var connectionProps = _rdlDoc.CreateElement("ConnectionProperties", _rdlDoc.DocumentElement!.NamespaceURI);
+        var dataProvider = _rdlDoc.CreateElement("DataProvider", _rdlDoc.DocumentElement!.NamespaceURI);
         dataProvider.InnerText = "System.Data.DataSet";
         connectionProps.AppendChild(dataProvider);
 
-        var connectString = _rdlDoc.CreateElement("ConnectString", _rdlDoc.DocumentElement.NamespaceURI);
+        var connectString = _rdlDoc.CreateElement("ConnectString", _rdlDoc.DocumentElement!.NamespaceURI);
         connectString.InnerText = "/* Local Connection */";
         connectionProps.AppendChild(connectString);
 
@@ -130,34 +156,32 @@ public class RdlcEditor
         // 修正回傳物件
         var dataSetNode = CreateElementWithAttribute("DataSet", "Name", type.Name);
 
-        var queryNode = _rdlDoc.CreateElement("Query", _rdlDoc.DocumentElement.NamespaceURI);
-        var dataSourceName = _rdlDoc.CreateElement("DataSourceName", _rdlDoc.DocumentElement.NamespaceURI);
-        dataSourceName.InnerText = type.Assembly.GetName().Name;
+        var queryNode = _rdlDoc.CreateElement("Query", _rdlDoc.DocumentElement!.NamespaceURI);
+        var dataSourceName = _rdlDoc.CreateElement("DataSourceName", _rdlDoc.DocumentElement!.NamespaceURI);
+        dataSourceName.InnerText = type.Assembly.GetName().Name!;
         queryNode.AppendChild(dataSourceName);
 
-        var commandText = _rdlDoc.CreateElement("CommandText", _rdlDoc.DocumentElement.NamespaceURI);
+        var commandText = _rdlDoc.CreateElement("CommandText", _rdlDoc.DocumentElement!.NamespaceURI);
         commandText.InnerText = "/* Local Query */";
         queryNode.AppendChild(commandText);
 
         dataSetNode.AppendChild(queryNode);
 
         // Fields
-        var fieldsNode = _rdlDoc.CreateElement("Fields", _rdlDoc.DocumentElement.NamespaceURI);
-        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                             .Where(p => p.CanRead)
-                             .OrderBy(p => p.Name);
+        var fieldsNode = _rdlDoc.CreateElement("Fields", _rdlDoc.DocumentElement!.NamespaceURI);
+        var properties = AssemblyTypeCatalog.GetProperties(type);
 
         foreach (var property in properties)
         {
             var fieldNode = CreateElementWithAttribute("Field", "Name", property.Name);
 
-            var dataFieldNode = _rdlDoc.CreateElement("DataField", _rdlDoc.DocumentElement.NamespaceURI);
+            var dataFieldNode = _rdlDoc.CreateElement("DataField", _rdlDoc.DocumentElement!.NamespaceURI);
             dataFieldNode.InnerText = property.Name;
             fieldNode.AppendChild(dataFieldNode);
 
             var rdTypeNameNode = _rdlDoc.CreateElement("rd:TypeName",
                 _nsManager.LookupNamespace("rd"));
-            rdTypeNameNode.InnerText = property.PropertyType.FullName;
+            rdTypeNameNode.InnerText = property.PropertyType.FullName ?? property.PropertyType.Name;
             fieldNode.AppendChild(rdTypeNameNode);
 
             fieldsNode.AppendChild(fieldNode);
@@ -169,7 +193,7 @@ public class RdlcEditor
             _nsManager.LookupNamespace("rd"));
 
         var rdDataSetName = _rdlDoc.CreateElement("rd:DataSetName", dataSetInfoNode.NamespaceURI);
-        rdDataSetName.InnerText = type.Assembly.GetName().Name;
+        rdDataSetName.InnerText = type.Assembly.GetName().Name!;
         dataSetInfoNode.AppendChild(rdDataSetName);
 
         var tableNameNode = _rdlDoc.CreateElement("rd:TableName", dataSetInfoNode.NamespaceURI);
